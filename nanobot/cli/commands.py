@@ -215,7 +215,7 @@ def onboard():
 
 def _make_provider(config: Config):
     """Create the appropriate LLM provider from config."""
-    from nanobot.providers.base import GenerationSettings
+    from nanobot.providers.base import GenerationSettings, LLMProvider
     from nanobot.providers.openai_codex_provider import OpenAICodexProvider
     from nanobot.providers.azure_openai_provider import AzureOpenAIProvider
     from nanobot.providers.provider_plugins import create_provider_by_factory, get_provider_factory
@@ -273,12 +273,13 @@ def _make_provider(config: Config):
             provider_name=provider_name,
         )
 
-    defaults = config.agents.defaults
-    provider.generation = GenerationSettings(
-        temperature=defaults.temperature,
-        max_tokens=defaults.max_tokens,
-        reasoning_effort=defaults.reasoning_effort,
-    )
+    if isinstance(provider, LLMProvider):
+        defaults = config.agents.defaults
+        provider.generation = GenerationSettings(
+            temperature=defaults.temperature,
+            max_tokens=defaults.max_tokens,
+            reasoning_effort=defaults.reasoning_effort,
+        )
     return provider
 
 
