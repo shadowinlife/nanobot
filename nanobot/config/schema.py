@@ -225,6 +225,7 @@ class ChannelsConfig(Base):
     slack: SlackConfig = Field(default_factory=SlackConfig)
     qq: QQConfig = Field(default_factory=QQConfig)
     matrix: MatrixConfig = Field(default_factory=MatrixConfig)
+    plugins: dict[str, dict[str, Any]] = Field(default_factory=dict)  # Third-party channel configs
     wecom: WecomConfig = Field(default_factory=WecomConfig)
 
 
