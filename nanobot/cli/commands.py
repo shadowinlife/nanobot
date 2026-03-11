@@ -215,6 +215,7 @@ def _make_provider(config: Config):
     """Create the appropriate LLM provider from config."""
     from nanobot.providers.openai_codex_provider import OpenAICodexProvider
     from nanobot.providers.azure_openai_provider import AzureOpenAIProvider
+    from nanobot.providers.provider_plugins import create_provider_by_factory, get_provider_factory
 
     model = config.agents.defaults.model
     provider_name = config.get_provider_name(model)
@@ -247,6 +248,16 @@ def _make_provider(config: Config):
             default_model=model,
         )
 
+    plugin_factory = get_provider_factory(provider_name)
+    if plugin_factory:
+        return create_provider_by_factory(
+            plugin_factory,
+            config=config,
+            model=model,
+            provider_name=provider_name,
+            provider_config=p,
+        )
+
     from nanobot.providers.litellm_provider import LiteLLMProvider
     from nanobot.providers.registry import find_by_name
     spec = find_by_name(provider_name)
@@ -259,6 +270,7 @@ def _make_provider(config: Config):
         api_key=p.api_key if p else None,
         api_base=config.get_api_base(model),
         default_model=model,
+        extra_body=p.extra_body if p else None,
         extra_headers=p.extra_headers if p else None,
         provider_name=provider_name,
     )
@@ -873,7 +885,7 @@ def status():
 
         # Check API keys from registry
         for spec in PROVIDERS:
-            p = getattr(config.providers, spec.name, None)
+            p = config.get_provider_config(spec.name)
             if p is None:
                 continue
             if spec.is_oauth:
@@ -928,6 +940,27 @@ def provider_login(
 
     console.print(f"{__logo__} OAuth Login - {spec.label}\n")
     handler()
+
+
+@provider_app.command("reload")
+def provider_reload():
+    """Reload provider plugins for the current nanobot process."""
+    from nanobot.providers.provider_plugins import load_provider_factories
+    from nanobot.providers.registry import BUILTIN_PROVIDERS, reload_providers
+
+    providers = reload_providers()
+    factories = load_provider_factories()
+
+    plugin_specs = [s for s in providers if s.name not in {b.name for b in BUILTIN_PROVIDERS}]
+    plugin_names = ", ".join(s.name.replace("_", "-") for s in plugin_specs) or "none"
+
+    console.print(f"{__logo__} Provider Reload\n")
+    console.print(
+        f"Reloaded providers: [green]{len(providers)}[/green] "
+        f"(built-in: {len(BUILTIN_PROVIDERS)}, plugins: {len(plugin_specs)})"
+    )
+    console.print(f"Plugin providers: {plugin_names}")
+    console.print(f"Plugin factories: [green]{len(factories)}[/green]")
 
 
 @_register_login("openai_codex")
