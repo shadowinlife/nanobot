@@ -8,7 +8,6 @@ from typing import Any
 
 from loguru import logger
 
-from nanobot.bus.events import OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
 from nanobot.channels.channel_plugins import (
@@ -112,6 +111,12 @@ class ChannelManager:
             _try_build(
                 "matrix",
                 lambda: self._build_matrix_channel(),
+            )
+
+        if self.config.channels.wecom.enabled:
+            _try_build(
+                "wecom",
+                lambda: self._build_wecom_channel(),
             )
 
         return builtins
@@ -223,6 +228,11 @@ class ChannelManager:
         from nanobot.channels.matrix import MatrixChannel
 
         return MatrixChannel(self.config.channels.matrix, self.bus)
+
+    def _build_wecom_channel(self) -> BaseChannel:
+        from nanobot.channels.wecom import WecomChannel
+
+        return WecomChannel(self.config.channels.wecom, self.bus)
 
     def _validate_allow_from(self) -> None:
         for name, ch in self.channels.items():

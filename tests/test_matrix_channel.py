@@ -4,11 +4,13 @@ from types import SimpleNamespace
 
 import pytest
 
-try:
-    import nanobot.channels.matrix as matrix_module
-except ImportError as exc:
-    pytest.skip(f"Matrix dependencies unavailable: {exc}", allow_module_level=True)
-
+# Local dev/CI environments may not have a working libolm runtime.
+# Skip this entire test module when Matrix dependencies cannot be imported.
+matrix_module = pytest.importorskip(
+    "nanobot.channels.matrix",
+    reason="Matrix runtime dependencies (e.g. libolm/python-olm) are unavailable",
+    exc_type=ImportError,
+)
 from nanobot.bus.events import OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.matrix import (
