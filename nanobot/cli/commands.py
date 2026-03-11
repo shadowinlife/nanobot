@@ -6,6 +6,7 @@ import select
 import signal
 import sys
 from pathlib import Path
+from typing import Any
 
 # Force UTF-8 encoding for Windows console
 if sys.platform == "win32":
@@ -308,10 +309,13 @@ def gateway(
     config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
 ):
     """Start the nanobot gateway."""
+    from loguru import logger
+
     from nanobot.agent.loop import AgentLoop
     from nanobot.bus.queue import MessageBus
     from nanobot.channels.manager import ChannelManager
-    from nanobot.config.paths import get_cron_dir
+    from nanobot.config.loader import load_config
+    from nanobot.config.paths import get_cron_dir, get_runtime_subdir
     from nanobot.cron.service import CronService
     from nanobot.cron.types import CronJob
     from nanobot.heartbeat.service import HeartbeatService
@@ -398,6 +402,25 @@ def gateway(
 
     # Create channel manager
     channels = ChannelManager(config, bus)
+    pid_file = get_runtime_subdir("gateway") / "gateway.pid"
+    pid_file.write_text(str(os.getpid()), encoding="utf-8")
+
+    async def _reload_channels_runtime() -> None:
+        nonlocal config
+        logger.info("Received SIGHUP, reloading channels and plugin factories")
+        reloaded = load_config()
+        result = await channels.reload_channels(reloaded)
+        if result.get("ok"):
+            config = reloaded
+            if hasattr(agent, "channels_config"):
+                agent.channels_config = reloaded.channels
+            logger.info(
+                "Channel reload success (mode={}): {}",
+                result.get("mode"),
+                ", ".join(result.get("enabled_channels", [])) or "none",
+            )
+        else:
+            logger.error("Channel reload failed: {}", result.get("error", "unknown error"))
 
     def _pick_heartbeat_target() -> tuple[str, str]:
         """Pick a routable channel/chat target for heartbeat-triggered messages."""
@@ -462,6 +485,17 @@ def gateway(
     console.print(f"[green]✓[/green] Heartbeat: every {hb_cfg.interval_s}s")
 
     async def run():
+        loop = asyncio.get_running_loop()
+        if hasattr(signal, "SIGHUP"):
+            try:
+                loop.add_signal_handler(
+                    signal.SIGHUP,
+                    lambda: asyncio.create_task(_reload_channels_runtime()),
+                )
+            except NotImplementedError:
+                # add_signal_handler may be unsupported on some platforms
+                pass
+
         try:
             await cron.start()
             await heartbeat.start()
@@ -477,6 +511,11 @@ def gateway(
             cron.stop()
             agent.stop()
             await channels.stop_all()
+            try:
+                if pid_file.exists():
+                    pid_file.unlink()
+            except Exception:
+                pass
 
     asyncio.run(run())
 
@@ -679,6 +718,44 @@ channels_app = typer.Typer(help="Manage channels")
 app.add_typer(channels_app, name="channels")
 
 
+def _get_gateway_pid_file() -> Path:
+    """Return the gateway PID file path for the active config context."""
+    from nanobot.config.paths import get_runtime_subdir
+
+    return get_runtime_subdir("gateway") / "gateway.pid"
+
+
+def _reload_channel_plugins_and_signal_gateway(
+    *,
+    signal_gateway: bool,
+) -> tuple[dict[str, Any], str]:
+    """Reload channel plugin factories and optionally signal running gateway for online apply."""
+    from nanobot.channels.channel_plugins import load_channel_factories
+
+    factories = load_channel_factories()
+    plugin_names = ", ".join(sorted(factories.keys())) or "none"
+    detail = (
+        f"Reloaded channel factories: {len(factories)} (plugins: {plugin_names})"
+    )
+
+    signal_result = {"sent": False, "pid": None, "reason": "not requested"}
+    if signal_gateway:
+        pid_file = _get_gateway_pid_file()
+        if not hasattr(signal, "SIGHUP"):
+            signal_result["reason"] = "SIGHUP not supported on this platform"
+        elif not pid_file.exists():
+            signal_result["reason"] = f"gateway pid file not found at {pid_file}"
+        else:
+            try:
+                pid = int(pid_file.read_text(encoding="utf-8").strip())
+                os.kill(pid, signal.SIGHUP)
+                signal_result = {"sent": True, "pid": pid, "reason": "ok"}
+            except Exception as e:
+                signal_result["reason"] = str(e)
+
+    return signal_result, detail
+
+
 @channels_app.command("status")
 def channels_status():
     """Show channel status."""
@@ -770,6 +847,76 @@ def channels_status():
     )
 
     console.print(table)
+
+
+@channels_app.command("reload")
+def channels_reload(
+    signal_gateway: bool = typer.Option(
+        True,
+        "--signal-gateway/--no-signal-gateway",
+        help="Send SIGHUP to running gateway so channel plugins apply online",
+    ),
+):
+    """Reload channel plugin factories and optionally trigger online gateway channel reload."""
+    signal_result, detail = _reload_channel_plugins_and_signal_gateway(
+        signal_gateway=signal_gateway,
+    )
+
+    console.print(f"{__logo__} Channel Reload\n")
+    console.print(detail)
+    if signal_result["sent"]:
+        console.print(
+            f"Online apply: [green]SIGHUP sent[/green] to gateway pid {signal_result['pid']}"
+        )
+    elif signal_gateway:
+        console.print(
+            "Online apply: [yellow]not triggered[/yellow] "
+            f"({signal_result['reason']})."
+        )
+
+
+@channels_app.command("install")
+def channels_install(
+    package: str = typer.Argument(..., help="PyPI package for channel plugin"),
+    upgrade: bool = typer.Option(True, "--upgrade/--no-upgrade", help="Upgrade if already installed"),
+    signal_gateway: bool = typer.Option(
+        True,
+        "--signal-gateway/--no-signal-gateway",
+        help="After install, send SIGHUP to running gateway for online apply",
+    ),
+):
+    """Install a channel plugin package and apply it online when possible."""
+    import subprocess
+
+    cmd = [sys.executable, "-m", "pip", "install"]
+    if upgrade:
+        cmd.append("--upgrade")
+    cmd.append(package)
+
+    console.print(f"{__logo__} Installing channel plugin: [cyan]{package}[/cyan]\n")
+    try:
+        subprocess.run(cmd, check=True)
+    except subprocess.CalledProcessError as e:
+        console.print(f"[red]Install failed:[/red] {e}")
+        raise typer.Exit(1)
+
+    signal_result, detail = _reload_channel_plugins_and_signal_gateway(
+        signal_gateway=signal_gateway,
+    )
+    console.print("[green]✓[/green] Package installed")
+    console.print(detail)
+    if signal_result["sent"]:
+        console.print(
+            f"Online apply: [green]SIGHUP sent[/green] to gateway pid {signal_result['pid']}"
+        )
+    elif signal_gateway:
+        console.print(
+            "Online apply: [yellow]not triggered[/yellow] "
+            f"({signal_result['reason']})."
+        )
+        console.print(
+            "If gateway is not running in this config context, start or restart `nanobot gateway` to apply."
+        )
 
 
 def _get_bridge_dir() -> Path:

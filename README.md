@@ -917,6 +917,61 @@ ProviderSpec(
 </details>
 
 
+<details>
+<summary><b>Adding a New Channel (Developer Guide)</b></summary>
+
+nanobot supports channel plugins via Python entry points.
+Recommended way: publish a package and install it with `pip install your-channel-plugin`.
+
+Complete example (Webhook channel plugin): `examples/channel-plugin-echo/`
+
+**Step 1.** Implement a channel class and factory in your package:
+
+```python
+# your_plugin/factory.py
+from nanobot.channels.base import BaseChannel
+
+def create_channel(*, config, bus, channel_name, app_config) -> BaseChannel:
+    ...
+```
+
+**Step 2.** Register it in `pyproject.toml`:
+
+```toml
+[project.entry-points."nanobot.channel_factories"]
+my-channel = "your_plugin.factory:create_channel"
+```
+
+`nanobot` normalizes entry point names from `-` to `_`.
+In this example, `my-channel` becomes `my_channel` in runtime config.
+
+**Step 3.** Configure and enable it:
+
+```json
+{
+  "channels": {
+    "plugins": {
+      "my_channel": {
+        "enabled": true
+      }
+    }
+  }
+}
+```
+
+**Step 4.** Install and apply online:
+
+```bash
+nanobot channels install your-channel-plugin
+nanobot channels reload
+```
+
+When a gateway process is running, `nanobot channels reload` sends `SIGHUP` to apply changes online.
+If online reload fails, nanobot falls back to channel-level hot restart.
+
+</details>
+
+
 ### MCP (Model Context Protocol)
 
 > [!TIP]
@@ -1103,6 +1158,8 @@ nanobot gateway --config ~/.nanobot-telegram/config.json --workspace /tmp/nanobo
 | `nanobot provider reload` | Reload provider plugins in current process |
 | `nanobot channels login` | Link WhatsApp (scan QR) |
 | `nanobot channels status` | Show channel status |
+| `nanobot channels install <package>` | Install channel plugin package |
+| `nanobot channels reload` | Reload channel plugins and apply online |
 
 Interactive mode exits: `exit`, `quit`, `/exit`, `/quit`, `:q`, or `Ctrl+D`.
 
