@@ -328,13 +328,13 @@ def gateway(
     """Start the nanobot gateway."""
     from loguru import logger
 
-    from nanobot.agent.loop import AgentLoop
     from nanobot.bus.queue import MessageBus
     from nanobot.channels.manager import ChannelManager
-    from nanobot.config.loader import load_config
+    from nanobot.config.loader import get_config_path, load_config
     from nanobot.config.paths import get_cron_dir, get_runtime_subdir
     from nanobot.cron.service import CronService
     from nanobot.cron.types import CronJob
+    from nanobot.gateway.route_manager import RouteManager
     from nanobot.heartbeat.service import HeartbeatService
     from nanobot.session.manager import SessionManager
 
@@ -352,58 +352,32 @@ def gateway(
     provider = _make_provider(config)
     session_manager = SessionManager(config.workspace_path)
 
-    # Create cron service first (callback set after agent creation)
+    # Create cron service first (callback set after router creation)
     cron_store_path = get_cron_dir() / "jobs.json"
     cron = CronService(cron_store_path)
 
-    # Create agent with cron service
-    agent = AgentLoop(
+    # RouteManager runs each active session in a dedicated worker process.
+    router = RouteManager(
         bus=bus,
-        provider=provider,
-        workspace=config.workspace_path,
-        model=config.agents.defaults.model,
-        max_iterations=config.agents.defaults.max_tool_iterations,
-        context_window_tokens=config.agents.defaults.context_window_tokens,
-        brave_api_key=config.tools.web.search.api_key or None,
-        web_proxy=config.tools.web.proxy or None,
-        exec_config=config.tools.exec,
-        cron_service=cron,
-        restrict_to_workspace=config.tools.restrict_to_workspace,
-        session_manager=session_manager,
-        mcp_servers=config.tools.mcp_servers,
-        channels_config=config.channels,
+        base_config_path=get_config_path(),
+        workspace_override=workspace,
     )
 
-    # Set cron callback (needs agent)
+    # Set cron callback (routes into per-session workers)
     async def on_cron_job(job: CronJob) -> str | None:
-        """Execute a cron job through the agent."""
-        from nanobot.agent.tools.cron import CronTool
-        from nanobot.agent.tools.message import MessageTool
+        """Execute a cron job through the routed session worker."""
         reminder_note = (
             "[Scheduled Task] Timer finished.\n\n"
             f"Task '{job.name}' has been triggered.\n"
             f"Scheduled instruction: {job.payload.message}"
         )
 
-        # Prevent the agent from scheduling new cron jobs during execution
-        cron_tool = agent.tools.get("cron")
-        cron_token = None
-        if isinstance(cron_tool, CronTool):
-            cron_token = cron_tool.set_cron_context(True)
-        try:
-            response = await agent.process_direct(
-                reminder_note,
-                session_key=f"cron:{job.id}",
-                channel=job.payload.channel or "cli",
-                chat_id=job.payload.to or "direct",
-            )
-        finally:
-            if isinstance(cron_tool, CronTool) and cron_token is not None:
-                cron_tool.reset_cron_context(cron_token)
-
-        message_tool = agent.tools.get("message")
-        if isinstance(message_tool, MessageTool) and message_tool._sent_in_turn:
-            return response
+        response = await router.process_direct(
+            reminder_note,
+            session_key=f"cron:{job.id}",
+            channel=job.payload.channel or "cli",
+            chat_id=job.payload.to or "direct",
+        )
 
         if job.payload.deliver and job.payload.to and response:
             from nanobot.bus.events import OutboundMessage
@@ -427,8 +401,6 @@ def gateway(
         result = await channels.reload_channels(reloaded)
         if result.get("ok"):
             config = reloaded
-            if hasattr(agent, "channels_config"):
-                agent.channels_config = reloaded.channels
             logger.info(
                 "Channel reload success (mode={}): {}",
                 result.get("mode"),
@@ -455,13 +427,13 @@ def gateway(
 
     # Create heartbeat service
     async def on_heartbeat_execute(tasks: str) -> str:
-        """Phase 2: execute heartbeat tasks through the full agent loop."""
+        """Phase 2: execute heartbeat tasks through the routed worker loop."""
         channel, chat_id = _pick_heartbeat_target()
 
         async def _silent(*_args, **_kwargs):
             pass
 
-        return await agent.process_direct(
+        return await router.process_direct(
             tasks,
             session_key="heartbeat",
             channel=channel,
@@ -481,7 +453,7 @@ def gateway(
     heartbeat = HeartbeatService(
         workspace=config.workspace_path,
         provider=provider,
-        model=agent.model,
+        model=config.agents.defaults.model,
         on_execute=on_heartbeat_execute,
         on_notify=on_heartbeat_notify,
         interval_s=hb_cfg.interval_s,
@@ -515,16 +487,16 @@ def gateway(
             await cron.start()
             await heartbeat.start()
             await asyncio.gather(
-                agent.run(),
+                router.run(),
                 channels.start_all(),
             )
         except KeyboardInterrupt:
             console.print("\nShutting down...")
         finally:
-            await agent.close_mcp()
+            router.stop()
+            await router.close()
             heartbeat.stop()
             cron.stop()
-            agent.stop()
             await channels.stop_all()
             try:
                 if pid_file.exists():
