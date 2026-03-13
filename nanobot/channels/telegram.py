@@ -423,7 +423,7 @@ class TelegramChannel(BaseChannel):
 
         user = update.effective_user
         await update.message.reply_text(
-            f"👋 Hi {user.first_name}! I'm nanobot.\n\n"
+            f"👋 Hi {user.first_name}! I'm Crawdaunt.\n\n"
             "Send me a message and I'll respond!\n"
             "Type /help to see available commands."
         )
@@ -433,7 +433,7 @@ class TelegramChannel(BaseChannel):
         if not update.message:
             return
         await update.message.reply_text(
-            "🐈 nanobot commands:\n"
+            "🦞 Crawdaunt commands:\n"
             "/new — Start a new conversation\n"
             "/stop — Stop the current task\n"
             "/help — Show available commands"
