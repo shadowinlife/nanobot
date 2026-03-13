@@ -124,7 +124,7 @@ class AgentLoop:
         self.tools.register(WebFetchTool(proxy=self.web_proxy))
         self.tools.register(MessageTool(send_callback=self.bus.publish_outbound))
         self.tools.register(SpawnTool(manager=self.subagents))
-        self.tools.register(OpenCodeTool())
+        self.tools.register(OpenCodeTool(send_callback=self.bus.publish_outbound))
         if self.cron_service:
             self.tools.register(CronTool(self.cron_service))
 
@@ -156,6 +156,9 @@ class AgentLoop:
             if tool := self.tools.get(name):
                 if hasattr(tool, "set_context"):
                     tool.set_context(channel, chat_id, *([message_id] if name == "message" else []))
+        if tool := self.tools.get("opencode"):
+            if hasattr(tool, "set_context"):
+                tool.set_context(channel, chat_id)
 
     @staticmethod
     def _strip_think(text: str | None) -> str | None:
@@ -358,8 +361,12 @@ class AgentLoop:
         key = session_key or msg.session_key
         session = self.sessions.get_or_create(key)
 
+        opencode = self.tools.get("opencode")
+        opencode_tool = opencode if isinstance(opencode, OpenCodeTool) else None
+
         # Slash commands
-        cmd = msg.content.strip().lower()
+        raw_cmd = msg.content.strip()
+        cmd = raw_cmd.lower()
         if cmd == "/new":
             try:
                 if not await self.memory_consolidator.archive_unconsolidated(session):
@@ -383,7 +390,135 @@ class AgentLoop:
                                   content="New session started.")
         if cmd == "/help":
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
-                                  content="🐈 nanobot commands:\n/new — Start a new conversation\n/stop — Stop the current task\n/help — Show available commands")
+                                  content="🐈 nanobot commands:\n/new — Start a new conversation\n/stop — Stop the current task\n/help — Show available commands\n/opencode-approve <plan_id> — Approve opencode plan and run in background\n/opencode-status <job_id> — Check background opencode job status\n/opencode-stop <job_id> — Stop a running opencode background job")
+        if cmd.startswith("/opencode-approve"):
+            parts = raw_cmd.split(maxsplit=1)
+            if len(parts) < 2 or not parts[1].strip():
+                return OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content="Usage: /opencode-approve <plan_id>",
+                )
+            if not opencode_tool:
+                return OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content="OpenCode tool is not available.",
+                )
+            result = await opencode_tool.approve(parts[1].strip())
+            return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=result)
+
+        if cmd.startswith("/opencode-status"):
+            parts = raw_cmd.split(maxsplit=1)
+            if len(parts) < 2 or not parts[1].strip():
+                return OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content="Usage: /opencode-status <job_id>",
+                )
+            if not opencode_tool:
+                return OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content="OpenCode tool is not available.",
+                )
+            result = opencode_tool.status(parts[1].strip())
+            return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=result)
+
+        if cmd.startswith("/opencode-stop"):
+            parts = raw_cmd.split(maxsplit=1)
+            if len(parts) < 2 or not parts[1].strip():
+                return OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content="Usage: /opencode-stop <job_id>",
+                )
+            if not opencode_tool:
+                return OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content="OpenCode tool is not available.",
+                )
+            result = opencode_tool.stop(parts[1].strip())
+            return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=result)
+
+        # Deterministic natural-language intent mapping for OpenCode controls.
+        if opencode_tool and not cmd.startswith("/"):
+            if re.search(r"(后续|以后).*(无需|不需要|免).*(审批|审核)|自动(审批|批准)", raw_cmd, re.IGNORECASE):
+                opencode_tool.set_auto_approve(msg.channel, msg.chat_id, True)
+                return OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content="已设置为后续免审批：OpenCode 计划生成后将自动执行。",
+                )
+
+            if re.search(r"(恢复|改回|重新).*(审批|审核)|关闭自动(审批|批准)|需要审批", raw_cmd, re.IGNORECASE):
+                opencode_tool.set_auto_approve(msg.channel, msg.chat_id, False)
+                return OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content="已恢复为需要审批：后续会先给计划，需确认后执行。",
+                )
+
+            m = re.search(
+                r"(?:执行|批准|审批|同意)\s*(?:计划|plan)?\s*(?:id)?\s*[:：=]?\s*([a-zA-Z0-9_-]{6,})",
+                raw_cmd,
+                re.IGNORECASE,
+            )
+            if m:
+                result = await opencode_tool.approve(m.group(1))
+                return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=result)
+
+            if re.search(r"(执行|批准|同意).*(这个|该).*(计划|plan)", raw_cmd, re.IGNORECASE):
+                latest_id = opencode_tool.latest_pending_plan_id(msg.channel, msg.chat_id)
+                if not latest_id:
+                    return OutboundMessage(
+                        channel=msg.channel,
+                        chat_id=msg.chat_id,
+                        content="当前会话没有待执行计划，请先让 opencode 生成计划。",
+                    )
+                result = await opencode_tool.approve(latest_id)
+                return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=result)
+
+            sm = re.search(
+                r"(?:状态|进度|progress|status)\s*(?:任务|job)?\s*(?:id)?\s*[:：=]?\s*([a-zA-Z0-9_-]{6,})\b",
+                raw_cmd,
+                re.IGNORECASE,
+            )
+            if sm:
+                result = opencode_tool.status(sm.group(1))
+                return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=result)
+
+            if re.search(r"(opencode|任务).*(状态|进度)|看看.*(状态|进度)|查询.*(状态|进度)", raw_cmd, re.IGNORECASE):
+                latest_job_id = opencode_tool.latest_job_id(msg.channel, msg.chat_id)
+                if not latest_job_id:
+                    return OutboundMessage(
+                        channel=msg.channel,
+                        chat_id=msg.chat_id,
+                        content="当前会话没有可查询的 opencode 任务。",
+                    )
+                result = opencode_tool.status(latest_job_id)
+                return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=result)
+
+            tm = re.search(
+                r"(?:停止|取消|终止)\s*(?:任务|job|opencode)?\s*(?:id)?\s*[:：=]?\s*([a-zA-Z0-9_-]{6,})\b",
+                raw_cmd,
+                re.IGNORECASE,
+            )
+            if tm:
+                result = opencode_tool.stop(tm.group(1))
+                return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=result)
+
+            if re.search(r"(停止|取消|终止).*(这个|该).*(任务|job|opencode)", raw_cmd, re.IGNORECASE):
+                latest_job_id = opencode_tool.latest_job_id(msg.channel, msg.chat_id)
+                if not latest_job_id:
+                    return OutboundMessage(
+                        channel=msg.channel,
+                        chat_id=msg.chat_id,
+                        content="当前会话没有可停止的 opencode 任务。",
+                    )
+                result = opencode_tool.stop(latest_job_id)
+                return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=result)
 
         await self.memory_consolidator.maybe_consolidate_by_tokens(session)
 
