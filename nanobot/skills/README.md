@@ -23,4 +23,5 @@ The skill format and metadata structure follow OpenClaw's conventions to maintai
 | `tmux` | Remote-control tmux sessions |
 | `clawhub` | Search and install skills from ClawHub registry |
 | `skill-creator` | Create new skills |
+| `opencode-workflow` | Always-on OpenCode ULW workflow: decompose coding work and script repeated operations |
 | `self-evolution-git` | Enforce git-managed self code evolution with test and commit guardrails |

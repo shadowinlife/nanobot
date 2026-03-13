@@ -1,7 +1,7 @@
 ---
 name: self-evolution-git
 description: Required workflow for nanobot self code evolution. Use git-managed changes, enforce tests, and produce searchable rollback-friendly commits.
-always: true
+metadata: {"nanobot":{"always":true}}
 ---
 
 # Self Evolution (Git Guardrails)
@@ -10,6 +10,15 @@ Use this workflow whenever the task changes nanobot's own code-level capability,
 - adding or changing tools
 - changing agent loop, routing, context, prompt assembly, or skill loading
 - changing provider/channel/gateway behavior
+
+## Mandatory OpenCode Route
+
+For any self-evolution or `/self-update` coding mutation, OpenCode ultrawork must be the execution path.
+
+- Required: use OpenCode with `ulw <task>` for implementation work.
+- Required: provide OpenCode with explicit scope, constraints, and validation commands.
+- Forbidden: bypassing OpenCode and performing pure manual dynamic edits for self-evolution.
+- If OpenCode is unavailable, stop mutation and report a blocked precondition.
 
 ## Preconditions (must pass before editing)
 
@@ -30,6 +39,7 @@ Use this workflow whenever the task changes nanobot's own code-level capability,
 3. Implement minimal code change
 - Keep patch scope minimal and directly tied to test intent.
 - Avoid unrelated refactors in the same commit.
+- Execute implementation through OpenCode ULW for self-evolution tasks.
 
 4. Validate quality gates (required)
 - Compile/syntax must pass for changed source files.
@@ -49,11 +59,11 @@ Use this workflow whenever the task changes nanobot's own code-level capability,
 ## Commit Message Examples
 
 ```text
-feat(agent-tools): add find_code tool for source symbol lookup
+feat(agent-tools): integrate opencode tool for self-update coding flow
 
-Why: self-update requires deterministic code location before edits
-What: add FindCodeTool and register in AgentLoop default toolset
-Validation: compile=pass, tests=pytest -q tests/test_find_code_tool.py => pass
+Why: self-update should use OpenCode ULW for coding execution and staged planning
+What: add OpenCodeTool and route code-writing workflow through `opencode`
+Validation: compile=pass, tests=pytest -q tests/test_opencode_tool.py => pass
 ```
 
 ```text

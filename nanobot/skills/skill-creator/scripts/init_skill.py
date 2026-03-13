@@ -31,6 +31,13 @@ description: [TODO: Complete and informative explanation of what the skill does 
 
 [TODO: 1-2 sentences explaining what this skill enables]
 
+## OpenCode Policy For Coding/Planning
+
+[TODO: If this skill includes code writing, code modification, or complex multi-stage task planning, make OpenCode ULW the default execution path.
+- Use `opencode` with `ulw <task>` for implementation and complex staged planning.
+- Require explicit stage goals and validation commands.
+- If OpenCode is unavailable, instruct the agent to report a blocked precondition instead of silently switching to a manual-only flow.]
+
 ## Structuring This Skill
 
 [TODO: Choose the structure that best fits this skill's purpose. Common patterns:

@@ -23,6 +23,15 @@ equipped with procedural knowledge that no model can fully possess.
 
 ## Core Principles
 
+### OpenCode-First For Coding And Planning
+
+When a skill includes code writing, code modification, or complex task planning, standardize execution on OpenCode ULW.
+
+- For code writing/editing flows: use `opencode` with `ulw <task>` as the primary execution path.
+- For complex multi-stage tasks: use OpenCode to produce and execute staged plans with explicit validation per stage.
+- Do not define parallel manual-only coding paths for these scenarios unless OpenCode is unavailable.
+- If OpenCode is unavailable, instruct the agent to report a blocked precondition explicitly.
+
 ### Concise is Key
 
 The context window is a public good. Skills share the context window with everything else the agent needs: system prompt, conversation history, other Skills' metadata, and the actual user request.
